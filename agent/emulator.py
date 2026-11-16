@@ -15,8 +15,25 @@ CONSOLE_NAME = "dnconsole.exe"
 _cached_console = None
 
 
+def _decode_output(data):
+    """兼容雷电命令行的 UTF-8、GBK 中文输出。"""
+    if not data:
+        return ""
+
+    if isinstance(data, str):
+        return data.strip()
+
+    for encoding in ("utf-8-sig", "gbk", "utf-8"):
+        try:
+            return data.decode(encoding).strip()
+        except UnicodeDecodeError:
+            continue
+
+    return data.decode("gbk", errors="replace").strip()
+
+
 def choose_console_path(parent=None):
-    """打开 Windows 文件选择窗口，选择 dnconsole.exe。"""
+    """选择 dnconsole.exe。"""
     global _cached_console
 
     from PySide6.QtWidgets import QFileDialog, QMessageBox
@@ -37,7 +54,7 @@ def choose_console_path(parent=None):
         QMessageBox.warning(
             parent,
             "文件选择错误",
-            "请选择 dnconsole.exe，不能选择其他 EXE 文件。"
+            "请选择 dnconsole.exe。"
         )
         return None
 
@@ -67,13 +84,11 @@ def choose_console_path(parent=None):
 
 
 def get_console_path():
-    """读取已经保存的雷电模拟器路径。"""
     cfg = load_config()
     return str(cfg.get("ldconsole_path", "") or "").strip()
 
 
 def find_console():
-    """读取用户选择的 dnconsole.exe。"""
     global _cached_console
 
     if _cached_console:
@@ -85,37 +100,33 @@ def find_console():
 
     if not configured_path:
         raise FileNotFoundError(
-            "尚未选择雷电模拟器 dnconsole.exe。\n"
-            "请在辅助端设置中点击选择 EXE 文件。"
+            "尚未选择雷电模拟器 dnconsole.exe，"
+            "请在辅助端设置中选择文件。"
         )
 
     console = Path(configured_path)
 
     if not console.is_file():
         raise FileNotFoundError(
-            f"雷电模拟器文件不存在：\n{console}\n"
-            "请重新选择 dnconsole.exe。"
+            f"雷电模拟器文件不存在：{console}"
         )
 
     if console.name.lower() != CONSOLE_NAME.lower():
         raise ValueError("保存的文件不是 dnconsole.exe")
 
     _cached_console = str(console.resolve())
-
     return Path(_cached_console)
 
 
 def _run_console_command(*args, timeout=30):
-    """执行雷电模拟器命令。"""
+    """执行雷电命令，并兼容中文编码。"""
     console = find_console()
 
     try:
         result = subprocess.run(
             [str(console), *[str(arg) for arg in args]],
             capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
+            text=False,
             timeout=timeout,
             creationflags=getattr(
                 subprocess,
@@ -127,7 +138,7 @@ def _run_console_command(*args, timeout=30):
     except OSError as exc:
         if getattr(exc, "winerror", None) == 740:
             raise PermissionError(
-                "雷电模拟器要求管理员权限。\n"
+                "雷电模拟器要求管理员权限。"
                 "请关闭中控程序，使用管理员身份重新运行。"
             ) from exc
 
@@ -137,27 +148,31 @@ def _run_console_command(*args, timeout=30):
 
     except subprocess.TimeoutExpired as exc:
         raise TimeoutError(
-            f"雷电模拟器命令执行超时：{args}"
+            f"雷电命令执行超时：{args}"
         ) from exc
 
-    if result.returncode != 0:
-        error = (
-            result.stderr
-            or result.stdout
-            or ""
-        ).strip()
+    stdout = _decode_output(result.stdout)
+    stderr = _decode_output(result.stderr)
 
+    if result.returncode != 0:
         raise RuntimeError(
-            f"雷电模拟器命令执行失败："
-            f"{error or result.returncode}"
+            f"雷电命令执行失败：{stderr or stdout or result.returncode}"
         )
 
-    return result
+    return subprocess.CompletedProcess(
+        result.args,
+        result.returncode,
+        stdout=stdout,
+        stderr=stderr,
+    )
 
 
 def list_emulators():
     """读取雷电多开器中的模拟器列表。"""
-    result = _run_console_command("list2", timeout=30)
+    result = _run_console_command(
+        "list2",
+        timeout=30
+    )
 
     emulators = []
 
@@ -193,13 +208,15 @@ def list_emulators():
             "started": started,
         })
 
-    emulators.sort(key=lambda item: item["index"])
+    emulators.sort(
+        key=lambda item: item["index"]
+    )
 
     return emulators
 
 
 def start_emulator(index):
-    """启动指定编号的雷电模拟器。"""
+    """启动指定编号的模拟器。"""
     return _run_console_command(
         "launch",
         "--index",
@@ -209,7 +226,7 @@ def start_emulator(index):
 
 
 def quit_emulator(index):
-    """关闭指定编号的雷电模拟器。"""
+    """关闭指定编号的模拟器。"""
     return _run_console_command(
         "quit",
         "--index",
@@ -218,14 +235,33 @@ def quit_emulator(index):
     )
 
 
-def test_console():
-    """测试路径并读取模拟器列表。"""
-    console = find_console()
+def get_emulator_boot_status(index):
+    """获取 Android 系统启动状态。"""
+    result = _run_console_command(
+        "adb",
+        "--index",
+        index,
+        "--command",
+        "shell getprop sys.boot_completed",
+        timeout=15
+    )
 
+    output = result.stdout.strip()
+
+    ready = any(
+        line.strip() == "1"
+        for line in output.splitlines()
+    )
+
+    return ready, output
+
+
+def test_console():
+    console = find_console()
     emulators = list_emulators()
 
     return {
         "success": True,
         "path": str(console),
-        "emulators": emulators
+        "emulators": emulators,
     }
