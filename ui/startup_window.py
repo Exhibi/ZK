@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (
 
 from core.config import save_config
 from ui.theme import STYLE
-from ui.main_window import MainWindow
+from ui.loop_main_window import LoopMainWindow as MainWindow
 
 
 # 保持同机启动的两个窗口对象，避免被提前释放
