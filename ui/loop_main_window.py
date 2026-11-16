@@ -15,12 +15,34 @@ from ui.main_window import MainWindow
 from agent.emulator import (
     list_emulators,
     start_emulator,
-    get_emulator_boot_status,
+    quit_emulator,
 )
 
 
+# ==============================
+# 测试模式固定参数
+# ==============================
+
+TEST_RUNTIME_SECONDS = 120       # 每台运行2分钟
+START_INTERVAL_SECONDS = 30      # 初始启动间隔30秒
+MONITOR_INTERVAL_SECONDS = 2     # 每2秒检查一次状态
+START_RETRY_SECONDS = 10         # 启动失败后10秒重试
+START_TIMEOUT_SECONDS = 45       # 启动后45秒仍未运行则重试
+QUIT_RETRY_SECONDS = 15          # 关闭未成功时15秒后重试
+
+
 class EmulatorStartWorker(QThread):
-    """按编号逐台启动并等待 Android 系统完成启动。"""
+    """
+    模拟器循环测试工作线程。
+
+    功能：
+    1. 只管理模拟器列表前N台。
+    2. 初始启动命令之间间隔30秒。
+    3. 每台模拟器独立运行120秒。
+    4. 正常运行满120秒后关闭并重新启动。
+    5. 意外关闭后自动重新启动原模拟器。
+    6. 不启动第N+1台及后面的模拟器。
+    """
 
     emulator_list_ready = Signal(list)
     status_changed = Signal(int, str)
@@ -33,74 +55,117 @@ class EmulatorStartWorker(QThread):
         self.max_running = max_running
         self._stop_event = threading.Event()
 
-        self.boot_timeout = 180
-        self.check_interval = 3
+        self.states = {}
 
     def stop(self):
         self._stop_event.set()
 
-    def wait_for_android_ready(self, index, name):
-        """等待 Android 系统启动完成。"""
+    def set_status(self, index, status):
+        self.status_changed.emit(index, status)
 
-        start_time = time.monotonic()
-        last_output = ""
+    def send_message(self, message):
+        self.finished_message.emit(message)
 
-        while not self._stop_event.is_set():
+    def start_one(self, state, reason):
+        """启动指定模拟器。"""
 
-            try:
-                ready, output = get_emulator_boot_status(index)
-                last_output = output
+        if self._stop_event.is_set():
+            return
 
-                if ready:
-                    self.status_changed.emit(
-                        index,
-                        "运行中（Android 已启动）"
-                    )
+        index = state["index"]
+        name = state["name"]
 
-                    self.finished_message.emit(
-                        f"{name} 已确认 Android 启动完成，"
-                        "现在准备启动下一台。"
-                    )
+        now = time.monotonic()
 
-                    return True
+        state["phase"] = "starting"
+        state["last_start_attempt"] = now
+        state["retry_at"] = now + START_RETRY_SECONDS
 
-            except Exception as exc:
-                last_output = str(exc)
+        self.set_status(
+            index,
+            "正在启动（" + reason + "）"
+        )
 
-            elapsed = time.monotonic() - start_time
+        self.send_message(
+            f"{name}：{reason}，正在重新启动。"
+        )
 
-            self.status_changed.emit(
+        try:
+            start_emulator(index)
+
+            state["phase"] = "starting"
+            state["last_start_attempt"] = time.monotonic()
+
+            self.set_status(
                 index,
-                f"等待系统启动（{int(elapsed)}秒）"
+                "启动命令已发送，等待运行状态"
             )
 
-            if int(elapsed) % 15 < self.check_interval:
-                self.finished_message.emit(
-                    f"{name} 启动检测中，"
-                    f"ADB 返回：{last_output or '暂无返回内容'}"
-                )
+            self.send_message(
+                f"{name}：启动命令已发送。"
+            )
 
-            if elapsed >= self.boot_timeout:
-                self.status_changed.emit(
-                    index,
-                    "启动检测超时"
-                )
+        except Exception as exc:
+            state["phase"] = "waiting"
+            state["retry_at"] = (
+                time.monotonic() + START_RETRY_SECONDS
+            )
 
-                self.finished_message.emit(
-                    f"{name} 等待超过 {self.boot_timeout} 秒。"
-                    f"最后一次 ADB 返回：{last_output or '空'}。"
-                    "已停止后续启动。"
-                )
+            self.set_status(
+                index,
+                "启动失败，等待自动重试"
+            )
 
-                return False
+            self.send_message(
+                f"{name} 启动失败，将自动重试：{exc}"
+            )
 
-            if self._stop_event.wait(self.check_interval):
-                return False
+    def quit_one(self, state):
+        """正常关闭指定模拟器，准备循环重启。"""
 
-        return False
+        index = state["index"]
+        name = state["name"]
+
+        state["phase"] = "stopping"
+        state["stop_sent_at"] = time.monotonic()
+        state["retry_at"] = (
+            time.monotonic() + QUIT_RETRY_SECONDS
+        )
+
+        self.set_status(
+            index,
+            "运行满2分钟，正在关闭"
+        )
+
+        self.send_message(
+            f"{name}：测试运行时间已满2分钟，正在关闭模拟器。"
+        )
+
+        try:
+            quit_emulator(index)
+
+            self.set_status(
+                index,
+                "关闭命令已发送，准备重新启动"
+            )
+
+        except Exception as exc:
+            self.send_message(
+                f"{name} 关闭命令异常，将继续检测并重试：{exc}"
+            )
+
+    def update_running_count(self, emulators):
+        count = sum(
+            1
+            for item in emulators
+            if item.get("started", False)
+        )
+
+        self.running_count_changed.emit(count)
 
     def run(self):
         try:
+            # 读取本机全部模拟器。
             emulators = list_emulators()
 
             emulators.sort(
@@ -110,135 +175,334 @@ class EmulatorStartWorker(QThread):
             self.emulator_list_ready.emit(emulators)
 
             if not emulators:
-                self.finished_message.emit(
-                    "没有检测到雷电模拟器。"
+                self.send_message(
+                    "没有检测到雷电模拟器，请先检查模拟器路径。"
                 )
                 return
 
-            # 固定选取编号最靠前的 N 台。
+            # 只选择编号最靠前的N台。
             selected = emulators[:self.max_running]
+
+            if not selected:
+                self.send_message(
+                    "没有可参与测试的模拟器。"
+                )
+                return
 
             selected_indexes = {
                 item["index"]
                 for item in selected
             }
 
-            self.finished_message.emit(
+            self.send_message(
                 f"检测到 {len(emulators)} 台模拟器，"
-                f"本次固定处理编号最靠前的 "
-                f"{len(selected)} 台。"
+                f"本次只测试列表前 {len(selected)} 台。"
             )
 
+            # 第N台之后的模拟器全部标记为不参与。
             for item in emulators:
                 if item["index"] not in selected_indexes:
-                    self.status_changed.emit(
+                    self.set_status(
                         item["index"],
-                        "未选中（数量限制）"
+                        "未选中（不参与本次测试）"
                     )
 
-            for position, item in enumerate(
-                selected,
-                start=1
-            ):
+            now = time.monotonic()
 
-                if self._stop_event.is_set():
-                    self.finished_message.emit(
-                        "任务已停止，不再启动下一台。"
-                    )
-                    return
+            initial_queue = []
 
+            # 建立每台模拟器独立的状态。
+            for item in selected:
                 index = item["index"]
                 name = item["name"]
+                started = item.get("started", False)
 
-                self.finished_message.emit(
-                    f"正在处理第 {position}/{len(selected)} 台："
-                    f"{name}（编号 {index}）"
-                )
+                state = {
+                    "index": index,
+                    "name": name,
+                    "phase": "running" if started else "waiting",
+                    "deadline": (
+                        now + TEST_RUNTIME_SECONDS
+                        if started else None
+                    ),
+                    "last_start_attempt": 0,
+                    "stop_sent_at": 0,
+                    "retry_at": 0,
+                    "initial_dispatched": bool(started),
+                }
 
-                try:
-                    if item.get("started", False):
-                        self.status_changed.emit(
-                            index,
-                            "已运行，正在检查启动状态"
-                        )
+                self.states[index] = state
 
-                    else:
-                        self.status_changed.emit(
-                            index,
-                            "正在启动"
-                        )
-
-                        self.finished_message.emit(
-                            f"{name}：正在发送启动命令。"
-                        )
-
-                        start_emulator(index)
-
-                        self.finished_message.emit(
-                            f"{name}：启动命令已发送，"
-                            "开始检查 Android 状态。"
-                        )
-
-                except Exception as exc:
-                    self.status_changed.emit(
+                if started:
+                    self.set_status(
                         index,
-                        "启动失败"
+                        "已运行，开始2分钟测试计时"
+                    )
+                else:
+                    self.set_status(
+                        index,
+                        "等待启动"
+                    )
+                    initial_queue.append(index)
+
+            self.update_running_count(emulators)
+
+            self.send_message(
+                f"测试启动：同时管理前 {len(selected)} 台模拟器；"
+                f"每台运行 {TEST_RUNTIME_SECONDS} 秒；"
+                f"初始启动间隔 {START_INTERVAL_SECONDS} 秒。"
+            )
+
+            # 初始启动队列。
+            queue_position = 0
+            next_initial_launch = time.monotonic()
+
+            last_poll = 0
+            last_error_message = 0
+
+            while not self._stop_event.is_set():
+
+                now = time.monotonic()
+
+                # ==========================
+                # 第一部分：按30秒间隔启动
+                # ==========================
+
+                if (
+                    queue_position < len(initial_queue)
+                    and now >= next_initial_launch
+                ):
+                    index = initial_queue[queue_position]
+                    state = self.states[index]
+
+                    state["initial_dispatched"] = True
+
+                    self.start_one(
+                        state,
+                        "首次启动"
                     )
 
-                    self.finished_message.emit(
-                        f"{name} 启动失败：{exc}"
+                    queue_position += 1
+
+                    next_initial_launch = (
+                        time.monotonic()
+                        + START_INTERVAL_SECONDS
                     )
 
-                    return
+                # ==========================
+                # 第二部分：定期检查模拟器状态
+                # ==========================
 
-                if self._stop_event.is_set():
-                    self.finished_message.emit(
-                        "任务已停止，不再启动下一台。"
-                    )
-                    return
+                if now - last_poll >= MONITOR_INTERVAL_SECONDS:
 
-                # 当前一台未完成启动前，绝不启动下一台。
-                ready = self.wait_for_android_ready(
-                    index,
-                    name
-                )
+                    last_poll = now
 
-                if not ready:
-                    if self._stop_event.is_set():
-                        self.finished_message.emit(
-                            "任务已停止，未启动后续模拟器。"
-                        )
-                    return
+                    try:
+                        latest = list_emulators()
 
-                try:
-                    latest = list_emulators()
+                        latest_map = {
+                            item["index"]: item
+                            for item in latest
+                        }
 
-                    running_count = sum(
-                        1
-                        for emulator in latest
-                        if emulator.get("started", False)
-                    )
+                        self.update_running_count(latest)
 
-                    self.running_count_changed.emit(
-                        running_count
-                    )
+                        for index, state in self.states.items():
 
-                except Exception:
-                    pass
+                            if self._stop_event.is_set():
+                                break
 
-            self.finished_message.emit(
-                f"前 {len(selected)} 台模拟器已经依次完成启动。"
-                "没有启动第 N+1 台。"
+                            item = latest_map.get(index)
+
+                            if item is None:
+                                self.set_status(
+                                    index,
+                                    "未检测到模拟器，等待重新检测"
+                                )
+                                continue
+
+                            is_started = item.get(
+                                "started",
+                                False
+                            )
+
+                            phase = state["phase"]
+                            now = time.monotonic()
+
+                            # --------------------------
+                            # 正在等待启动
+                            # --------------------------
+
+                            if phase == "waiting":
+
+                                # 如果启动命令异常，但实际已经启动，
+                                # 则直接进入运行状态。
+                                if is_started:
+                                    state["phase"] = "running"
+                                    state["deadline"] = (
+                                        now + TEST_RUNTIME_SECONDS
+                                    )
+
+                                    self.set_status(
+                                        index,
+                                        "运行中（2分钟测试计时）"
+                                    )
+
+                                    self.send_message(
+                                        f"{state['name']} 已确认启动，"
+                                        "开始2分钟计时。"
+                                    )
+
+                                elif (
+                                    state["initial_dispatched"]
+                                    and now >= state["retry_at"]
+                                ):
+                                    self.start_one(
+                                        state,
+                                        "启动失败自动重试"
+                                    )
+
+                                continue
+
+                            # --------------------------
+                            # 正在启动
+                            # --------------------------
+
+                            if phase == "starting":
+
+                                if is_started:
+                                    state["phase"] = "running"
+
+                                    state["deadline"] = (
+                                        now + TEST_RUNTIME_SECONDS
+                                    )
+
+                                    self.set_status(
+                                        index,
+                                        "运行中（2分钟测试计时）"
+                                    )
+
+                                    self.send_message(
+                                        f"{state['name']} 已成功启动，"
+                                        "开始独立计时120秒。"
+                                    )
+
+                                elif (
+                                    now - state["last_start_attempt"]
+                                    >= START_TIMEOUT_SECONDS
+                                    and now >= state["retry_at"]
+                                ):
+                                    self.start_one(
+                                        state,
+                                        "启动超时自动重试"
+                                    )
+
+                                continue
+
+                            # --------------------------
+                            # 正常运行中
+                            # --------------------------
+
+                            if phase == "running":
+
+                                # 运行中突然消失，判定为意外关闭。
+                                if not is_started:
+
+                                    self.send_message(
+                                        f"检测到 {state['name']} 意外关闭，"
+                                        "正在自动重启原模拟器。"
+                                    )
+
+                                    self.start_one(
+                                        state,
+                                        "检测到意外关闭"
+                                    )
+
+                                    continue
+
+                                # 每台独立计时，满120秒才关闭。
+                                if (
+                                    state["deadline"] is not None
+                                    and now >= state["deadline"]
+                                ):
+                                    self.quit_one(state)
+
+                                else:
+                                    remaining = max(
+                                        0,
+                                        int(
+                                            state["deadline"] - now
+                                        )
+                                    )
+
+                                    self.set_status(
+                                        index,
+                                        f"运行中（剩余{remaining}秒）"
+                                    )
+
+                                continue
+
+                            # --------------------------
+                            # 正常关闭阶段
+                            # --------------------------
+
+                            if phase == "stopping":
+
+                                # 已经确认关闭，马上重启原模拟器。
+                                if not is_started:
+
+                                    self.send_message(
+                                        f"{state['name']} 已正常关闭，"
+                                        "现在重新启动。"
+                                    )
+
+                                    self.start_one(
+                                        state,
+                                        "2分钟循环重启"
+                                    )
+
+                                # 关闭命令未生效，继续重试关闭。
+                                elif now >= state["retry_at"]:
+
+                                    self.send_message(
+                                        f"{state['name']} 尚未关闭，"
+                                        "重新发送关闭命令。"
+                                    )
+
+                                    self.quit_one(state)
+
+                                continue
+
+                    except Exception as exc:
+
+                        # list2读取失败不能当成模拟器意外关闭。
+                        # 保留原状态，下次继续检测。
+                        if (
+                            time.monotonic() - last_error_message
+                            >= 10
+                        ):
+                            self.send_message(
+                                f"模拟器状态检测暂时失败，"
+                                f"稍后继续检测：{exc}"
+                            )
+
+                            last_error_message = time.monotonic()
+
+                # 不在界面线程中等待。
+                self._stop_event.wait(1)
+
+            self.send_message(
+                "测试循环已停止。已启动的模拟器保持当前状态，不会强制关闭。"
             )
 
         except Exception as exc:
-            self.finished_message.emit(
-                f"模拟器启动任务失败：{exc}"
+            self.send_message(
+                f"模拟器循环测试发生错误：{exc}"
             )
 
 
 class LoopMainWindow(MainWindow):
-    """辅助端模拟器顺序启动控制窗口。"""
+    """辅助端模拟器循环测试控制窗口。"""
 
     def __init__(self, cfg, mode):
         self._loop_ui_active = False
@@ -316,12 +580,12 @@ class LoopMainWindow(MainWindow):
 
         self.loop_count_input = QSpinBox()
         self.loop_count_input.setRange(1, 20)
-        self.loop_count_input.setValue(5)
+        self.loop_count_input.setValue(3)
         self.loop_count_input.setFixedWidth(90)
 
         self.loop_count_input.setToolTip(
-            "只启动编号最靠前的 N 台模拟器，"
-            "逐台等待 Android 启动完成后再启动下一台。"
+            "只管理模拟器列表中编号最靠前的N台，"
+            "不会启动后面的模拟器。"
         )
 
         self.loop_start_button = QPushButton(
@@ -532,12 +796,13 @@ class LoopMainWindow(MainWindow):
         self.detect_button.setEnabled(False)
 
         self.loop_status_label.setText(
-            f"准备启动前 {count} 台模拟器"
+            f"准备循环测试前 {count} 台模拟器"
         )
 
         self.write_log(
-            f"开始任务：固定选择编号最靠前的 {count} 台，"
-            "逐台启动并等待 Android 完成启动。"
+            f"开始循环测试：只选择列表前 {count} 台；"
+            "初始启动间隔30秒；每台运行120秒后关闭并重启；"
+            "意外关闭自动重启原模拟器。"
         )
 
         worker = EmulatorStartWorker(count)
@@ -583,12 +848,8 @@ class LoopMainWindow(MainWindow):
             self._start_worker.deleteLater()
             self._start_worker = None
 
-        if self._stop_requested:
+        if self._loop_ui_active:
             self.finish_loop_task()
-            return
-
-        # 流程结束后保持任务激活，等待用户手动停止。
-        self.loop_stop_button.setEnabled(True)
 
     def stop_loop_task(self):
         if not self._loop_ui_active:
@@ -601,14 +862,15 @@ class LoopMainWindow(MainWindow):
                 self._start_worker.stop()
 
                 self.loop_status_label.setText(
-                    "正在停止后续启动……"
+                    "正在停止循环任务……"
                 )
 
                 self.loop_stop_button.setEnabled(False)
 
                 self.write_log(
-                    "已请求停止，不再启动下一台模拟器。"
-                    "已经启动的模拟器不会关闭。"
+                    "已请求停止循环任务。"
+                    "不会再启动或重启模拟器，"
+                    "当前已经运行的模拟器保持运行。"
                 )
 
                 return
@@ -629,7 +891,7 @@ class LoopMainWindow(MainWindow):
         )
 
         self.write_log(
-            "任务控制已停止，已启动的模拟器保持运行。"
+            "循环测试已停止，已启动的模拟器保持当前状态。"
         )
 
         self.detect_emulator_count()
@@ -639,6 +901,6 @@ class LoopMainWindow(MainWindow):
             self._start_worker.stop()
 
             if self._start_worker.isRunning():
-                self._start_worker.wait(15000)
+                self._start_worker.wait(65000)
 
         super().closeEvent(event)
