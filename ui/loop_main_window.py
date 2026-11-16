@@ -1,5 +1,5 @@
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -8,26 +8,57 @@ from PySide6.QtWidgets import (
 )
 
 from ui.main_window import MainWindow
+from agent.emulator import list_emulators
 
 
 class LoopMainWindow(MainWindow):
-    """带模拟器循环任务控制区的主窗口。
-
-    当前版本只实现界面和按钮状态，不启动模拟器，
-    不领取账号，不执行游戏脚本。
-    """
+    """辅助端循环任务控制窗口。"""
 
     def __init__(self, cfg, mode):
         self._loop_ui_active = False
+        self._detect_worker = None
+
         super().__init__(cfg, mode)
+
+        # 界面初始化完成后，自动检测一次模拟器数量
+        if hasattr(self, "detect_button"):
+            QTimer.singleShot(500, self.detect_emulator_count)
 
     def create_agent_page(self):
         page = super().create_agent_page()
 
-        # 隐藏旧版“扫描并领取账号”按钮，避免误触发旧逻辑
+        # 隐藏旧版扫描领取账号按钮
         if hasattr(self, "scan_button"):
             self.scan_button.hide()
 
+        # 模拟器数量检测区域
+        detect_layout = QHBoxLayout()
+        detect_layout.setSpacing(10)
+
+        self.total_count_label = QLabel("模拟器总数：等待检测")
+        self.running_count_label = QLabel("正在运行：等待检测")
+
+        self.total_count_label.setStyleSheet(
+            "font-weight:600;color:#2563eb;"
+        )
+        self.running_count_label.setStyleSheet(
+            "font-weight:600;color:#16a34a;"
+        )
+
+        self.detect_button = QPushButton("检测模拟器数量")
+        self.detect_button.setMinimumWidth(130)
+        self.detect_button.clicked.connect(
+            self.detect_emulator_count
+        )
+
+        detect_layout.addWidget(self.total_count_label)
+        detect_layout.addWidget(self.running_count_label)
+        detect_layout.addWidget(self.detect_button)
+        detect_layout.addStretch()
+
+        page.layout().insertLayout(1, detect_layout)
+
+        # 循环任务控制区域
         controls = QHBoxLayout()
         controls.setSpacing(10)
 
@@ -66,18 +97,86 @@ class LoopMainWindow(MainWindow):
         controls.addWidget(self.loop_status_label)
         controls.addStretch()
 
-        # 放在辅助端状态信息下面、模拟器列表上面
-        page.layout().insertLayout(1, controls)
+        page.layout().insertLayout(2, controls)
 
         return page
 
     def scan_emulators(self):
-        """暂时屏蔽旧版自动扫描领取逻辑。
-
-        等循环任务和游戏识别功能完成后，
-        再由新的任务调度器统一管理扫描与账号领取。
-        """
+        """暂时屏蔽旧版自动扫描领取账号逻辑。"""
         return
+
+    def detect_emulator_count(self):
+        """后台读取本机雷电模拟器数量。"""
+
+        if not hasattr(self, "detect_button"):
+            return
+
+        if self._detect_worker is not None:
+            if self._detect_worker.isRunning():
+                return
+
+        self.detect_button.setEnabled(False)
+        self.detect_button.setText("正在检测……")
+
+        self.total_count_label.setText("模拟器总数：检测中")
+        self.running_count_label.setText("正在运行：检测中")
+
+        self.write_log("开始检测本机雷电模拟器数量……")
+
+        self._detect_worker = self.run_background(
+            list_emulators,
+            on_success=self.on_emulator_detected,
+            on_error=self.on_emulator_detect_error
+        )
+
+    def on_emulator_detected(self, emulators):
+        """处理模拟器检测结果。"""
+
+        total = len(emulators)
+
+        running = sum(
+            1 for item in emulators
+            if item.get("started", False)
+        )
+
+        self.total_count_label.setText(
+            f"模拟器总数：{total} 台"
+        )
+
+        self.running_count_label.setText(
+            f"正在运行：{running} 台"
+        )
+
+        self.detect_button.setEnabled(True)
+        self.detect_button.setText("重新检测")
+
+        self.write_log(
+            f"模拟器检测完成：共 {total} 台，"
+            f"当前运行 {running} 台。"
+        )
+
+        self._detect_worker = None
+
+    def on_emulator_detect_error(self, message):
+        """处理模拟器检测错误。"""
+
+        self.total_count_label.setText(
+            "模拟器总数：检测失败"
+        )
+
+        self.running_count_label.setText(
+            "正在运行：未知"
+        )
+
+        self.detect_button.setEnabled(True)
+        self.detect_button.setText("重新检测")
+
+        self.write_log(
+            f"模拟器数量检测失败：{message}",
+            "error"
+        )
+
+        self._detect_worker = None
 
     def start_loop_task(self):
         if self._loop_ui_active:
