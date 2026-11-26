@@ -41,8 +41,8 @@ class VideoFrameExtractorApp:
     def __init__(self, root: tk.Tk):
         self.root = root
         self.root.title(APP_TITLE)
-        self.root.geometry("830x720")
-        self.root.minsize(730, 650)
+        self.root.geometry("700x540")
+        self.root.minsize(600, 450)
 
         self.video_paths: list[Path] = []
         self.output_dir = tk.StringVar(value=str(Path.home() / "Desktop" / "video_analysis"))
@@ -69,36 +69,36 @@ class VideoFrameExtractorApp:
             style.theme_use("clam")
         except tk.TclError:
             pass
-        style.configure("TButton", font=("Microsoft YaHei UI", 10), padding=(10, 7))
-        style.configure("Accent.TButton", font=("Microsoft YaHei UI", 10, "bold"))
-        style.configure("TLabel", font=("Microsoft YaHei UI", 10))
-        style.configure("TLabelframe.Label", font=("Microsoft YaHei UI", 10, "bold"))
-        style.configure("TEntry", padding=5)
-        style.configure("Horizontal.TProgressbar", thickness=16)
+        style.configure("TButton", font=("Microsoft YaHei UI", 9), padding=(6, 3))
+        style.configure("Accent.TButton", font=("Microsoft YaHei UI", 9, "bold"), padding=(6, 3))
+        style.configure("TLabel", font=("Microsoft YaHei UI", 9))
+        style.configure("TLabelframe.Label", font=("Microsoft YaHei UI", 9, "bold"))
+        style.configure("TEntry", padding=2)
+        style.configure("Horizontal.TProgressbar", thickness=10)
 
-        outer = ttk.Frame(self.root, padding=18)
+        outer = ttk.Frame(self.root, padding=9)
         outer.pack(fill="both", expand=True)
 
         ttk.Label(outer, text="视频关键帧提取工具 V1.1",
-                  font=("Microsoft YaHei UI", 19, "bold")).pack(anchor="w")
+                  font=("Microsoft YaHei UI", 15, "bold")).pack(anchor="w")
         ttk.Label(outer, text="固定间隔截图 + 画面变化补帧，帮助还原录屏操作流程。",
-                  foreground="#586174").pack(anchor="w", pady=(3, 12))
+                  foreground="#586174").pack(anchor="w", pady=(2, 6))
 
-        video_box = ttk.LabelFrame(outer, text="1. 选择视频", padding=12)
-        video_box.pack(fill="x", pady=(0, 9))
+        video_box = ttk.LabelFrame(outer, text="1. 选择视频", padding=7)
+        video_box.pack(fill="x", pady=(0, 5))
         row = ttk.Frame(video_box)
         row.pack(fill="x")
         self.video_label = ttk.Label(row, text="尚未选择视频", foreground="#667085")
         self.video_label.pack(side="left", fill="x", expand=True)
         ttk.Button(row, text="选择视频（可多选）", command=self.choose_videos).pack(side="right")
-        self.video_list = tk.Listbox(video_box, height=3, font=("Microsoft YaHei UI", 9),
+        self.video_list = tk.Listbox(video_box, height=2, font=("Microsoft YaHei UI", 9),
                                      activestyle="none", selectmode=tk.EXTENDED)
-        self.video_list.pack(fill="x", pady=(7, 0))
+        self.video_list.pack(fill="x", pady=(4, 0))
 
-        settings = ttk.LabelFrame(outer, text="2. 提取设置", padding=12)
+        settings = ttk.LabelFrame(outer, text="2. 提取设置", padding=7)
         settings.pack(fill="x", pady=(0, 9))
         r1 = ttk.Frame(settings)
-        r1.pack(fill="x", pady=3)
+        r1.pack(fill="x", pady=1)
         ttk.Label(r1, text="固定截图间隔（秒）").pack(side="left")
         ttk.Entry(r1, textvariable=self.interval, width=8).pack(side="left", padx=(7, 18))
         ttk.Label(r1, text="每张联系表").pack(side="left")
@@ -106,7 +106,7 @@ class VideoFrameExtractorApp:
         ttk.Label(r1, text="张截图").pack(side="left")
 
         r2 = ttk.Frame(settings)
-        r2.pack(fill="x", pady=5)
+        r2.pack(fill="x", pady=2)
         ttk.Checkbutton(r2, text="启用画面变化检测（明显变化时额外截图）",
                         variable=self.change_enabled).pack(side="left")
         r3 = ttk.Frame(settings)
@@ -119,12 +119,12 @@ class VideoFrameExtractorApp:
                   foreground="#667085").pack(side="left", padx=8)
 
         r4 = ttk.Frame(settings)
-        r4.pack(fill="x", pady=(7, 2))
+        r4.pack(fill="x", pady=(3, 1))
         ttk.Label(r4, text="结果保存位置").pack(side="left")
         ttk.Entry(r4, textvariable=self.output_dir).pack(side="left", fill="x", expand=True, padx=8)
         ttk.Button(r4, text="浏览", command=self.choose_output).pack(side="right")
 
-        github = ttk.LabelFrame(outer, text="3. 上传到 GitHub（可选）", padding=12)
+        github = ttk.LabelFrame(outer, text="3. 上传到 GitHub（可选）", padding=7)
         github.pack(fill="x", pady=(0, 9))
         g1 = ttk.Frame(github)
         g1.pack(fill="x", pady=3)
@@ -139,20 +139,20 @@ class VideoFrameExtractorApp:
                   foreground="#667085").pack(side="left", padx=8)
 
         actions = ttk.Frame(outer)
-        actions.pack(fill="x", pady=(2, 8))
+        actions.pack(fill="x", pady=(1, 4))
         self.start_btn = ttk.Button(actions, text="开始提取", style="Accent.TButton", command=self.start_extract)
         self.start_btn.pack(side="left")
         self.stop_btn = ttk.Button(actions, text="停止", command=self.stop_extract, state="disabled")
         self.stop_btn.pack(side="left", padx=8)
         ttk.Button(actions, text="上传结果到 GitHub", command=self.upload_to_github).pack(side="right")
 
-        progress_box = ttk.LabelFrame(outer, text="运行状态", padding=12)
+        progress_box = ttk.LabelFrame(outer, text="运行状态", padding=7)
         progress_box.pack(fill="both", expand=True)
-        ttk.Label(progress_box, textvariable=self.status, wraplength=760).pack(anchor="w")
+        ttk.Label(progress_box, textvariable=self.status, wraplength=640).pack(anchor="w")
         self.progress = ttk.Progressbar(progress_box, mode="determinate", maximum=100)
-        self.progress.pack(fill="x", pady=8)
+        self.progress.pack(fill="x", pady=4)
         ttk.Label(progress_box, textvariable=self.progress_text).pack(anchor="w")
-        self.log = tk.Text(progress_box, height=7, font=("Consolas", 9), wrap="word",
+        self.log = tk.Text(progress_box, height=4, font=("Consolas", 8), wrap="word",
                            bg="#ffffff", relief="solid", borderwidth=1)
         self.log.pack(fill="both", expand=True, pady=(7, 0))
         self._log("V1.1 已就绪。画面变化检测会额外补帧，但不能保证捕捉视频中极短于采样间隔的瞬时动作。")
