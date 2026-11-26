@@ -11,8 +11,8 @@ if errorlevel 1 (
   exit /b 1
 )
 echo.
-echo 正在打包 Windows EXE...
-pyinstaller --noconfirm --clean --onefile --windowed --name "视频关键帧提取工具" video_frame_extractor.py
+echo 正在打包视频关键帧提取工具 V1.1...
+pyinstaller --noconfirm --clean --onefile --windowed --name "视频关键帧提取工具_V1.1" video_frame_extractor.py
 if errorlevel 1 (
   echo.
   echo 打包失败。
@@ -20,5 +20,5 @@ if errorlevel 1 (
   exit /b 1
 )
 echo.
-echo 打包完成：dist\视频关键帧提取工具.exe
+echo 打包完成：dist\视频关键帧提取工具_V1.1.exe
 pause
