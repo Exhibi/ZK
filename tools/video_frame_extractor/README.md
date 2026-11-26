@@ -1,31 +1,41 @@
-# 视频关键帧提取工具（Windows）
+# 视频关键帧提取工具 V1.1（Windows）
 
 独立 Windows 桌面工具，不依赖雷电中控主程序。
 
-## 功能
+## V1.1 功能
 - 通过文件选择框选择一个或多个本地视频（MP4/MOV/AVI/MKV/WMV/FLV/M4V/WEBM）。
-- 按设定的秒数间隔提取关键帧。
+- **固定间隔截图**：默认每 0.5 秒保存一张，间隔可自行调整。
+- **画面变化检测补帧**：逐帧分析视频画面，发现明显变化时额外保存截图；可关闭。
+- 变化阈值可调（默认 18，数值越低越敏感），最小补帧间隔可调（默认 0.3 秒），减少动画闪烁导致的重复截图。
 - 每 N 张截图自动生成一张联系表（3 列布局，带时间标签）。
+- 每个视频生成 `frames_manifest.csv`，记录文件名、时间秒数、时间戳、截图原因（固定间隔/画面变化）和变化强度。
 - 显示处理进度，可请求停止。
 - 可选：把结果复制到本地已克隆的 Git 仓库并执行 git add / commit / push。
-- 不会上传原始视频，只上传提取后的 JPG 关键帧和联系表。
+- 不会上传原始视频，只上传提取后的 JPG 关键帧、联系表和 CSV 清单。
+
+## 推荐设置
+- 一般流程分析：固定间隔 0.5 秒，开启画面变化检测，阈值 18，最小补帧间隔 0.3 秒。
+- 如果画面变化太多、截图数量过大：把阈值调高（例如 25-35），或把最小补帧间隔调到 0.5-1 秒。
+- 如果重要变化漏掉：把阈值调低（例如 10-15），但截图数量会增加。
+
+注意：变化检测是对视频帧做图像差异分析，能补充明显的画面状态变化，但不能识别视频中没有呈现的鼠标/键盘输入事件，也不能保证捕捉短于视频帧间隔的瞬时变化。需要精确还原输入事件时，应结合操作录制数据。
 
 ## 运行源码
-需要 Windows 10/11、Python 3.10+、Git（仅上传 GitHub 时需要）。
+需要 Windows 10/11、Python 3.10+、OpenCV、NumPy；Git 仅在上传 GitHub 时需要。
 
 在此目录打开 PowerShell：
-\`\`\`powershell
+```powershell
 python -m pip install -r requirements.txt
 python video_frame_extractor.py
-\`\`\`
+```
 
 ## 打包成 EXE
-双击 \`build_exe.bat\`，或运行：
-\`\`\`powershell
+双击 `build_exe.bat`，或运行：
+```powershell
 python -m pip install pyinstaller
-pyinstaller --noconfirm --clean --onefile --windowed --name 视频关键帧提取工具 video_frame_extractor.py
-\`\`\`
-生成文件：\`dist\\视频关键帧提取工具.exe\`。
+pyinstaller --noconfirm --clean --onefile --windowed --name 视频关键帧提取工具_V1.1 video_frame_extractor.py
+```
+生成文件：`dist\\视频关键帧提取工具_V1.1.exe`。
 
 ## 上传到 GitHub
 1. 先在本机使用 Git clone 克隆目标仓库，并确保 GitHub 推送认证已经配置好。
@@ -35,6 +45,6 @@ pyinstaller --noconfirm --clean --onefile --windowed --name 视频关键帧提�
 5. 工具会先检查仓库是否干净；如果检测到已有未提交更改，会取消上传，避免误把其他代码一起提交。
 6. 上传时只暂存设置的目标目录，提交后推送当前分支到 origin。
 
-默认仓库内目录为 \`video_analysis\`。如需其他位置，可在界面中修改。
+默认仓库内目录为 `video_analysis`。如需其他位置，可在界面中修改。
 
-注意：GitHub 上传的是提取后的图片，不是视频原文件。请勿上传包含账号密码、个人隐私或其他敏感内容的画面。
+注意：再次上传同名视频的结果时，会覆盖仓库目标目录中对应的同名结果子目录。请勿上传包含账号密码、个人隐私或其他敏感内容的画面。
