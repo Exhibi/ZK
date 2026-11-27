@@ -169,7 +169,7 @@ class VideoFrameExtractorApp:
             self.diagnostic_dir.mkdir(parents=True, exist_ok=True)
             stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             with self.diagnostic_log.open("a", encoding="utf-8") as f:
-                f.write(f"[{stamp}] {message}\\n")
+                f.write(f"[{stamp}] {message}\n")
         except Exception:
             pass
 
@@ -180,7 +180,7 @@ class VideoFrameExtractorApp:
 
     def _report_callback_exception(self, exc_type, exc_value, exc_traceback):
         detail = "".join(traceback.format_exception(exc_type, exc_value, exc_traceback))
-        self._write_diagnostic("Tkinter界面回调异常：\\n" + detail)
+        self._write_diagnostic("Tkinter界面回调异常：\n" + detail)
 
     def choose_videos(self):
         files = filedialog.askopenfilenames(
