@@ -211,8 +211,13 @@ class VideoFrameExtractorApp:
         self.is_running = True
         self.start_btn.configure(state="disabled")
         self.stop_btn.configure(state="normal")
-        self.progress.configure(value=0, maximum=100)
+        self.progress.stop()
+        self.progress.configure(mode="determinate", value=0, maximum=100)
+        self.progress_text.set("任务已启动，正在准备处理……")
         self.status.set("正在逐帧分析视频……")
+        self._log("任务已启动。")
+        self._log(f"待处理视频数量：{len(self.video_paths)}")
+        self._log(f"输出目录：{Path(self.output_dir.get()).expanduser()}")
         options = (self.video_paths.copy(), Path(self.output_dir.get()).expanduser(),
                    interval, sheet_count, self.change_enabled.get(), threshold, min_gap)
         self.worker = threading.Thread(target=self._extract_worker, args=options, daemon=True)
@@ -226,7 +231,9 @@ class VideoFrameExtractorApp:
     def _extract_worker(self, videos: list[Path], output: Path, interval: float,
                         sheet_count: int, detect_change: bool, threshold: float, min_gap: float):
         try:
+            self.events.put(("log", "后台处理线程已启动，正在检查输出目录……"))
             output.mkdir(parents=True, exist_ok=True)
+            self.events.put(("log", f"输出目录已准备：{output}"))
             total = len(videos)
             for video_index, video in enumerate(videos):
                 if self.stop_event.is_set():
@@ -241,19 +248,35 @@ class VideoFrameExtractorApp:
                 frames_dir.mkdir(parents=True, exist_ok=True)
                 sheets_dir.mkdir(parents=True, exist_ok=True)
 
+                self.events.put(("log", f"正在打开视频：{video.name}"))
                 cap = cv2.VideoCapture(str(video))
                 if not cap.isOpened():
-                    self.events.put(("log", f"无法打开视频，跳过：{video}"))
-                    continue
-                fps = cap.get(cv2.CAP_PROP_FPS) or 0
-                frame_count = cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0
-                duration = frame_count / fps if fps > 0 else 0
-                if duration <= 0:
                     cap.release()
-                    self.events.put(("log", f"无法读取视频时长：{video}"))
+                    self.events.put(("log", f"无法打开视频，跳过：{video}；请检查文件是否损坏或编码是否受支持。"))
                     continue
 
-                self.events.put(("log", f"开始：{video.name}，时长 {format_time(duration)}，原始帧率 {fps:.2f} FPS"))
+                fps = cap.get(cv2.CAP_PROP_FPS)
+                frame_count = cap.get(cv2.CAP_PROP_FRAME_COUNT)
+                try:
+                    fps = float(fps) if fps is not None else 0.0
+                except (TypeError, ValueError):
+                    fps = 0.0
+                try:
+                    frame_count = int(frame_count) if frame_count is not None else 0
+                except (TypeError, ValueError, OverflowError):
+                    frame_count = 0
+                if fps < 0 or not np.isfinite(fps):
+                    fps = 0.0
+                if frame_count < 0:
+                    frame_count = 0
+                duration = frame_count / fps if fps > 0 and frame_count > 0 else 0.0
+
+                if duration > 0:
+                    self.events.put(("log", f"视频已打开：{video.name}；时长 {format_time(duration)}；帧率 {fps:.2f} FPS；总帧数 {frame_count}"))
+                    self.events.put(("progress_mode", "determinate"))
+                else:
+                    self.events.put(("log", f"视频已打开：{video.name}；视频时长/总帧数元数据不可用，将尝试实际解码并继续提取。"))
+                    self.events.put(("progress_mode", "indeterminate"))
                 saved_records: list[tuple[Path, float, str]] = []
                 manifest_path = video_out / "frames_manifest.csv"
                 previous_small = None
@@ -269,7 +292,8 @@ class VideoFrameExtractorApp:
                         ok, frame = cap.read()
                         if not ok or frame is None:
                             break
-                        current_time = frame_index / fps if fps > 0 else cap.get(cv2.CAP_PROP_POS_MSEC) / 1000
+                        current_time = (frame_index / fps if fps > 0
+                                        else max(0.0, cap.get(cv2.CAP_PROP_POS_MSEC) / 1000.0))
                         frame_index += 1
 
                         small = cv2.resize(frame, (160, 90), interpolation=cv2.INTER_AREA)
@@ -302,11 +326,14 @@ class VideoFrameExtractorApp:
                                 writer.writerow([video.name, frame_path.name, f"{current_time:.3f}",
                                                  format_time(current_time), reason, f"{change_score:.2f}"])
 
-                        percent = min(100, int((current_time / duration) * 100))
-                        if percent != last_progress:
-                            last_progress = percent
-                            overall = int(((video_index + percent / 100) / total) * 100)
-                            self.events.put(("progress", overall, f"{video.name}：{percent}%"))
+                                if frame_count > 0:
+                            percent = min(100, int((frame_index / frame_count) * 100))
+                            if percent != last_progress:
+                                last_progress = percent
+                                overall = int(((video_index + percent / 100) / total) * 100)
+                                self.events.put(("progress", overall, f"{video.name}：{percent}%（已读取 {frame_index}/{frame_count} 帧）"))
+                        elif frame_index == 1 or frame_index % 30 == 0:
+                            self.events.put(("progress_text", f"{video.name}：已成功读取 {frame_index} 帧，正在解码……"))
                 cap.release()
 
                 if saved_records:
