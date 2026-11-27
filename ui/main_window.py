@@ -11,13 +11,14 @@ from PySide6.QtWidgets import (
     QPushButton, QTabWidget, QTableWidget, QTableWidgetItem,
     QLineEdit, QComboBox, QMessageBox, QPlainTextEdit,
     QFrame, QFormLayout, QDialog, QDialogButtonBox, QMenu,
-    QAbstractItemView, QFileDialog, QProgressDialog
+    QAbstractItemView, QFileDialog, QProgressDialog, QGroupBox
 )
 
 from core.logger import log
 from master.server import MasterServer
 from agent.client import AgentClient
-from agent.emulator import list_emulators
+from agent.emulator import list_emulators, find_console
+from agent.ruyuan_script import RuYuanScript
 from .theme import STYLE
 
 
@@ -268,6 +269,38 @@ class EmulatorAccountWorker(QThread):
         )
 
 
+
+
+class RuYuanScriptWorker(QThread):
+    message = Signal(str)
+    result_ready = Signal(int, object)
+
+    def __init__(self, emulator_index, console_path):
+        super().__init__()
+        self.emulator_index = int(emulator_index)
+        self.console_path = str(console_path)
+        self.stop_event = threading.Event()
+
+    def stop(self):
+        self.stop_event.set()
+
+    def run(self):
+        try:
+            engine = RuYuanScript(
+                self.emulator_index,
+                self.console_path,
+                on_log=self.message.emit,
+                stop_event=self.stop_event,
+            )
+            result = engine.run()
+        except Exception as exc:
+            result = {"success": False, "reason": str(exc)}
+            self.message.emit(
+                f"[如鸢][模拟器{self.emulator_index}] 脚本启动失败：{exc}"
+            )
+        self.result_ready.emit(self.emulator_index, result)
+
+
 class MainWindow(QMainWindow):
     def __init__(self, cfg, mode):
         super().__init__()
@@ -305,6 +338,7 @@ class MainWindow(QMainWindow):
         self._emulator_worker = None
         self._requested_emulators = set()
         self._emulator_rows = []
+        self._script_workers = {}
 
         # 双端模式的启动保护
         self._agent_start_requested = False
@@ -613,17 +647,136 @@ class MainWindow(QMainWindow):
         self.emulator_table.horizontalHeader().setStretchLastSection(True)
         layout.addWidget(self.emulator_table, 1)
 
+        script_group = QGroupBox("《如鸢》自动剧情脚本")
+        script_layout = QVBoxLayout(script_group)
+        controls = QHBoxLayout()
+        self.script_emulator_combo = QComboBox()
+        self.script_emulator_combo.setMinimumWidth(220)
+        self.script_start_button = QPushButton("启动自动剧情")
+        self.script_stop_button = QPushButton("停止脚本")
+        self.script_stop_button.setEnabled(False)
+        self.script_start_button.clicked.connect(self.start_ruyuan_script)
+        self.script_stop_button.clicked.connect(self.stop_ruyuan_script)
+        controls.addWidget(QLabel("目标模拟器："))
+        controls.addWidget(self.script_emulator_combo)
+        controls.addWidget(self.script_start_button)
+        controls.addWidget(self.script_stop_button)
+        controls.addStretch()
+        script_layout.addLayout(controls)
+
+        self.script_status_label = QLabel(
+            "规则：全部剧情自动推进；剧情选项严格按固定攻略路线选择。"
+        )
+        self.script_status_label.setWordWrap(True)
+        script_layout.addWidget(self.script_status_label)
+
+        self.script_log_view = QPlainTextEdit()
+        self.script_log_view.setReadOnly(True)
+        self.script_log_view.setMaximumBlockCount(1500)
+        self.script_log_view.setPlaceholderText("自动剧情执行日志……")
+        self.script_log_view.setMaximumHeight(155)
+        script_layout.addWidget(self.script_log_view)
+        layout.addWidget(script_group)
+
         self.add_placeholder_label(
-            layout, "本地识别：预留截图、图色识别、图片匹配和 OCR 接口。"
+            layout,
+            "路线安全规则：如果识别到的剧情节点没有对应攻略，或指定选项不存在，脚本会停止该模拟器，不会随机选择。"
         )
         self.add_placeholder_label(
-            layout, "任务执行：当前只建立通信与状态框架，不执行游戏脚本。"
-        )
-        self.add_placeholder_label(
-            layout, "账号进度：预留账号登录信息、引导状态、当前阶段和任务结果同步。"
+            layout,
+            "首次运行前需要配置剧情按钮模板和攻略路线。不同分辨率/游戏版本应分别验证模板，避免误点击。"
         )
 
         return page
+
+
+    # ---------------- 如鸢自动剧情脚本 ----------------
+
+    def _append_script_log(self, message):
+        self.write_log(message)
+        if hasattr(self, "script_log_view"):
+            self.script_log_view.appendPlainText(str(message))
+
+    def _refresh_script_emulators(self, rows):
+        if not hasattr(self, "script_emulator_combo"):
+            return
+        current = self.script_emulator_combo.currentData()
+        self.script_emulator_combo.clear()
+        for item in rows:
+            self.script_emulator_combo.addItem(
+                f"{item.get('index')} - {item.get('name')}",
+                int(item.get("index"))
+            )
+        if current is not None:
+            pos = self.script_emulator_combo.findData(current)
+            if pos >= 0:
+                self.script_emulator_combo.setCurrentIndex(pos)
+
+    def start_ruyuan_script(self):
+        if not self.is_agent_mode():
+            return
+        if not hasattr(self, "script_emulator_combo"):
+            return
+        index = self.script_emulator_combo.currentData()
+        if index is None:
+            QMessageBox.information(self, "提示", "请先扫描并选择一台模拟器。")
+            return
+        index = int(index)
+        if index in self._script_workers and self._script_workers[index].isRunning():
+            QMessageBox.information(self, "提示", "这台模拟器的脚本已经在运行。")
+            return
+        try:
+            console = find_console()
+        except Exception as exc:
+            QMessageBox.warning(self, "无法启动脚本", str(exc))
+            return
+
+        worker = RuYuanScriptWorker(index, console)
+        worker.message.connect(self._append_script_log)
+        worker.result_ready.connect(self.ruyuan_script_finished)
+        self._script_workers[index] = worker
+        worker.start()
+        self.script_start_button.setEnabled(False)
+        self.script_stop_button.setEnabled(True)
+        self.script_status_label.setText(
+            f"模拟器 {index}：正在执行自动剧情；所有对话自动推进，选项按固定攻略路线选择。"
+        )
+        self._append_script_log(f"[如鸢][模拟器{index}] 已提交脚本启动任务")
+
+    def stop_ruyuan_script(self):
+        if not hasattr(self, "script_emulator_combo"):
+            return
+        index = self.script_emulator_combo.currentData()
+        if index is None:
+            return
+        index = int(index)
+        worker = self._script_workers.get(index)
+        if worker and worker.isRunning():
+            worker.stop()
+            self.script_status_label.setText(
+                f"模拟器 {index}：已发送停止指令，等待当前识别步骤结束。"
+            )
+            self._append_script_log(f"[如鸢][模拟器{index}] 收到停止请求")
+
+    def ruyuan_script_finished(self, index, result):
+        worker = self._script_workers.pop(int(index), None)
+        if worker is not None:
+            worker.deleteLater()
+        success = bool(result.get("success"))
+        reason = result.get("reason", "")
+        if success:
+            self.script_status_label.setText(f"模拟器 {index}：脚本已停止。")
+        else:
+            self.script_status_label.setText(
+                f"模拟器 {index}：已安全暂停，原因：{reason}"
+            )
+        self._append_script_log(
+            f"[如鸢][模拟器{index}] 执行结束：{result}"
+        )
+        if not any(w.isRunning() for w in self._script_workers.values()):
+            self.script_start_button.setEnabled(True)
+            self.script_stop_button.setEnabled(False)
+
 
     # ---------------- 占位页面 ----------------
 
@@ -852,6 +1005,7 @@ class MainWindow(QMainWindow):
             return
 
         self._emulator_rows = rows
+        self._refresh_script_emulators(rows)
 
         for row in rows:
             if row.get("status") == "已领取":
@@ -1772,6 +1926,16 @@ class MainWindow(QMainWindow):
                 self.emulator_timer.stop()
         except Exception:
             pass
+
+        # 停止所有正在运行的剧情脚本
+        for script_worker in list(self._script_workers.values()):
+            try:
+                script_worker.stop()
+                if script_worker.isRunning():
+                    script_worker.wait(5000)
+            except Exception:
+                pass
+        self._script_workers.clear()
 
         # 停止本机辅助端
         try:
