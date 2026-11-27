@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-视频关键帧提取工具 V1.2
+视频关键帧提取工具 V1.3
 独立 Windows 桌面程序：本地选视频、固定间隔提帧、画面变化补帧、生成联系表和时间戳清单。
 """
 from __future__ import annotations
@@ -25,7 +25,7 @@ except ImportError:
     np = None
 
 
-APP_TITLE = "视频关键帧提取工具 V1.2"
+APP_TITLE = "视频关键帧提取工具 V1.3"
 SUPPORTED_VIDEO = (".mp4", ".mov", ".avi", ".mkv", ".wmv", ".flv", ".m4v", ".webm")
 
 
@@ -37,6 +37,25 @@ def safe_name(value: str) -> str:
 def format_time(seconds: float) -> str:
     seconds = max(0, int(seconds))
     return f"{seconds // 3600:02d}:{seconds % 3600 // 60:02d}:{seconds % 60:02d}"
+
+
+def imwrite_unicode(path: Path, image, params=None) -> bool:
+    """通过内存编码和 pathlib 写入，兼容 Windows 中文/Unicode 路径。"""
+    suffix = path.suffix or ".jpg"
+    ok, encoded = cv2.imencode(suffix, image, params or [])
+    if not ok:
+        return False
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(encoded.tobytes())
+    return True
+
+
+def imread_unicode(path: Path):
+    """通过 pathlib 读取，兼容 Windows 中文/Unicode 路径。"""
+    data = np.frombuffer(path.read_bytes(), dtype=np.uint8)
+    if data.size == 0:
+        return None
+    return cv2.imdecode(data, cv2.IMREAD_COLOR)
 
 
 class VideoFrameExtractorApp:
@@ -64,7 +83,7 @@ class VideoFrameExtractorApp:
         self.diagnostic_dir = Path.home() / "AppData" / "Local" / "VideoFrameExtractor"
         self.diagnostic_log = self.diagnostic_dir / "diagnostic.log"
         self._write_diagnostic("=" * 60)
-        self._write_diagnostic("应用启动；版本 V1.2")
+        self._write_diagnostic("应用启动；版本 V1.3")
 
         self._build_ui()
         self.root.report_callback_exception = self._report_callback_exception
@@ -86,7 +105,7 @@ class VideoFrameExtractorApp:
         outer = ttk.Frame(self.root, padding=9)
         outer.pack(fill="both", expand=True)
 
-        ttk.Label(outer, text="视频关键帧提取工具 V1.2",
+        ttk.Label(outer, text="视频关键帧提取工具 V1.3",
                   font=("Microsoft YaHei UI", 15, "bold")).pack(anchor="w")
         ttk.Label(outer, text="固定间隔截图 + 画面变化补帧，帮助还原录屏操作流程。",
                   foreground="#586174").pack(anchor="w", pady=(2, 6))
@@ -162,7 +181,7 @@ class VideoFrameExtractorApp:
         self.log = tk.Text(progress_box, height=4, font=("Consolas", 8), wrap="word",
                            bg="#ffffff", relief="solid", borderwidth=1)
         self.log.pack(fill="both", expand=True, pady=(7, 0))
-        self._log("V1.2 已就绪。画面变化检测会额外补帧，但不能保证捕捉视频中极短于采样间隔的瞬时动作。")
+        self._log("V1.3 已就绪。画面变化检测会额外补帧，但不能保证捕捉视频中极短于采样间隔的瞬时动作。")
 
     def _write_diagnostic(self, message: str):
         try:
@@ -305,6 +324,7 @@ class VideoFrameExtractorApp:
                 last_change_time = -1e9
                 frame_index = 0
                 last_progress = -1
+                save_failures = 0
 
                 with manifest_path.open("w", newline="", encoding="utf-8-sig") as csv_file:
                     writer = csv.writer(csv_file)
@@ -342,10 +362,14 @@ class VideoFrameExtractorApp:
                             reason = "+".join(reasons)
                             stamp = f"{int(current_time * 1000):010d}ms"
                             frame_path = frames_dir / f"frame_{len(saved_records)+1:06d}_{stamp}.jpg"
-                            if cv2.imwrite(str(frame_path), frame, [int(cv2.IMWRITE_JPEG_QUALITY), 92]):
+                            if imwrite_unicode(frame_path, frame, [int(cv2.IMWRITE_JPEG_QUALITY), 92]):
                                 saved_records.append((frame_path, current_time, reason))
                                 writer.writerow([video.name, frame_path.name, f"{current_time:.3f}",
                                                  format_time(current_time), reason, f"{change_score:.2f}"])
+                            else:
+                                save_failures += 1
+                                if save_failures <= 5:
+                                    self.events.put(("log", f"截图写入失败：{frame_path}"))
 
                         if frame_count > 0:
                             percent = min(100, int((frame_index / frame_count) * 100))
@@ -357,6 +381,8 @@ class VideoFrameExtractorApp:
                             self.events.put(("progress_text", f"{video.name}：已成功读取 {frame_index} 帧，正在解码……"))
                 cap.release()
 
+                if save_failures:
+                    self.events.put(("log", f"警告：共有 {save_failures} 张截图写入失败；请检查输出目录权限和磁盘空间。"))
                 if saved_records:
                     paths = [record[0] for record in saved_records]
                     times = [record[1] for record in saved_records]
@@ -375,7 +401,7 @@ class VideoFrameExtractorApp:
             thumbs = []
             thumb_w = 240
             for path, seconds in zip(batch, batch_times):
-                img = cv2.imread(str(path))
+                img = imread_unicode(path)
                 if img is None:
                     continue
                 h, w = img.shape[:2]
@@ -398,7 +424,7 @@ class VideoFrameExtractorApp:
                 x = gap + (i % cols) * thumb_w
                 sheet[y:y + thumb.shape[0], x:x + thumb.shape[1]] = thumb
             out = sheets_dir / f"contact_sheet_{start // per_sheet + 1:03d}.jpg"
-            cv2.imwrite(str(out), sheet, [int(cv2.IMWRITE_JPEG_QUALITY), 90])
+            imwrite_unicode(out, sheet, [int(cv2.IMWRITE_JPEG_QUALITY), 90])
 
     def _poll_events(self):
         try:
