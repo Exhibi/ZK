@@ -280,9 +280,16 @@ class RuYuanScriptWorker(QThread):
         self.emulator_index = int(emulator_index)
         self.console_path = str(console_path)
         self.stop_event = threading.Event()
+        self.pause_event = threading.Event()
 
     def stop(self):
         self.stop_event.set()
+
+    def pause(self):
+        self.pause_event.set()
+
+    def resume(self):
+        self.pause_event.clear()
 
     def run(self):
         try:
@@ -291,6 +298,7 @@ class RuYuanScriptWorker(QThread):
                 self.console_path,
                 on_log=self.message.emit,
                 stop_event=self.stop_event,
+                pause_event=self.pause_event,
             )
             result = engine.run()
         except Exception as exc:
