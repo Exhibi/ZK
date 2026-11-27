@@ -49,12 +49,14 @@ class RuYuanScript:
         config_path: str | Path | None = None,
         on_log: Optional[Callable[[str], None]] = None,
         stop_event: Optional[threading.Event] = None,
+        pause_event: Optional[threading.Event] = None,
     ):
         self.index = int(emulator_index)
         self.console = Path(console_path)
         self.config_path = Path(config_path or DEFAULT_CONFIG)
         self.on_log = on_log or (lambda _msg: None)
         self.stop_event = stop_event or threading.Event()
+        self.pause_event = pause_event or threading.Event()
         self.config = self._load_config()
         self.last_frame = None
         self.last_action = 0.0
@@ -220,7 +222,12 @@ class RuYuanScript:
                 )
         return None
 
+    def _wait_while_paused(self):
+        while self.pause_event.is_set() and not self.stop_event.is_set():
+            self.stop_event.wait(0.2)
+
     def _wait_for_action(self):
+        self._wait_while_paused()
         cooldown = float(self.config.get("action_cooldown", 1.0))
         remain = cooldown - (time.monotonic() - self.last_action)
         if remain > 0:
@@ -264,6 +271,9 @@ class RuYuanScript:
         idle = 0
         retries = 0
         while not self.stop_event.is_set():
+            self._wait_while_paused()
+            if self.stop_event.is_set():
+                break
             try:
                 action = self._detect_and_act()
                 if action:
