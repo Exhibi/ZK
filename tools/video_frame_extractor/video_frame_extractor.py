@@ -326,7 +326,7 @@ class VideoFrameExtractorApp:
                                 writer.writerow([video.name, frame_path.name, f"{current_time:.3f}",
                                                  format_time(current_time), reason, f"{change_score:.2f}"])
 
-                                if frame_count > 0:
+                        if frame_count > 0:
                             percent = min(100, int((frame_index / frame_count) * 100))
                             if percent != last_progress:
                                 last_progress = percent
@@ -387,9 +387,22 @@ class VideoFrameExtractorApp:
                 if kind == "log":
                     self._log(event[1])
                 elif kind == "progress":
-                    self.progress.configure(value=event[1])
+                    self.progress.stop()
+                    self.progress.configure(mode="determinate", value=event[1])
                     self.progress_text.set(event[2])
+                elif kind == "progress_mode":
+                    if event[1] == "indeterminate":
+                        self.progress.configure(mode="indeterminate")
+                        self.progress.start(12)
+                    else:
+                        self.progress.stop()
+                        self.progress.configure(mode="determinate", value=0)
+                elif kind == "progress_text":
+                    self.progress_text.set(event[1])
                 elif kind == "done":
+                    self.progress.stop()
+                    if not self.stop_event.is_set():
+                        self.progress.configure(mode="determinate", value=100)
                     self.is_running = False
                     self.start_btn.configure(state="normal")
                     self.stop_btn.configure(state="disabled")
@@ -397,6 +410,8 @@ class VideoFrameExtractorApp:
                     self.progress_text.set(event[1])
                     self._log(event[1])
                 elif kind == "error":
+                    self.progress.stop()
+                    self.progress.configure(mode="determinate")
                     self.is_running = False
                     self.start_btn.configure(state="normal")
                     self.stop_btn.configure(state="disabled")
