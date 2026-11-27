@@ -193,7 +193,7 @@ class EmulatorStartWorker(QThread):
                 if started:
                     self.set_status(
                         index,
-                        "已运行，开始持续运行测试计时"
+                        "运行中（持续运行，不自动关闭）"
                     )
                 else:
                     self.set_status(
@@ -298,12 +298,12 @@ class EmulatorStartWorker(QThread):
                                     
                                     self.set_status(
                                         index,
-                                        "运行中（持续运行测试计时）"
+                                        "运行中（持续运行，不自动关闭）"
                                     )
 
                                     self.send_message(
                                         f"{state['name']} 已确认启动，"
-                                        "开始持续运行计时。"
+                                        "将持续运行。"
                                     )
 
                                 elif (
@@ -334,7 +334,7 @@ class EmulatorStartWorker(QThread):
 
                                     self.send_message(
                                         f"{state['name']} 已成功启动，"
-                                        "开始独立计时持续运行。"
+                                        "将持续运行。"
                                     )
 
                                 elif (
@@ -688,7 +688,7 @@ class LoopMainWindow(MainWindow):
 
         self.write_log(
             f"开始循环任务：只选择列表前 {count} 台；"
-            "初始启动间隔30秒；每台运行持续运行后关闭并重启；"
+            "初始启动间隔30秒；模拟器持续运行，不会自动关闭；"
             "意外关闭自动重启原模拟器。"
         )
 
