@@ -15,7 +15,6 @@ from ui.main_window import MainWindow
 from agent.emulator import (
     list_emulators,
     start_emulator,
-    quit_emulator,
 )
 
 
@@ -23,12 +22,10 @@ from agent.emulator import (
 # 测试模式固定参数
 # ==============================
 
-TEST_RUNTIME_SECONDS = 120       # 每台运行2分钟
 START_INTERVAL_SECONDS = 30      # 初始启动间隔30秒
 MONITOR_INTERVAL_SECONDS = 2     # 每2秒检查一次状态
 START_RETRY_SECONDS = 10         # 启动失败后10秒重试
 START_TIMEOUT_SECONDS = 45       # 启动后45秒仍未运行则重试
-QUIT_RETRY_SECONDS = 15          # 关闭未成功时15秒后重试
 
 
 class EmulatorStartWorker(QThread):
@@ -38,10 +35,9 @@ class EmulatorStartWorker(QThread):
     功能：
     1. 只管理模拟器列表前N台。
     2. 初始启动命令之间间隔30秒。
-    3. 每台模拟器独立运行120秒。
-    4. 正常运行满120秒后关闭并重新启动。
-    5. 意外关闭后自动重新启动原模拟器。
-    6. 不启动第N+1台及后面的模拟器。
+    3. 模拟器启动后持续运行，不按固定时长关闭。
+    4. 意外关闭后自动重新启动原模拟器。
+    5. 不启动第N+1台及后面的模拟器。
     """
 
     emulator_list_ready = Signal(list)
@@ -120,40 +116,6 @@ class EmulatorStartWorker(QThread):
                 f"{name} 启动失败，将自动重试：{exc}"
             )
 
-    def quit_one(self, state):
-        """正常关闭指定模拟器，准备循环重启。"""
-
-        index = state["index"]
-        name = state["name"]
-
-        state["phase"] = "stopping"
-        state["stop_sent_at"] = time.monotonic()
-        state["retry_at"] = (
-            time.monotonic() + QUIT_RETRY_SECONDS
-        )
-
-        self.set_status(
-            index,
-            "运行满2分钟，正在关闭"
-        )
-
-        self.send_message(
-            f"{name}：测试运行时间已满2分钟，正在关闭模拟器。"
-        )
-
-        try:
-            quit_emulator(index)
-
-            self.set_status(
-                index,
-                "关闭命令已发送，准备重新启动"
-            )
-
-        except Exception as exc:
-            self.send_message(
-                f"{name} 关闭命令异常，将继续检测并重试：{exc}"
-            )
-
     def update_running_count(self, emulators):
         count = sum(
             1
@@ -221,12 +183,7 @@ class EmulatorStartWorker(QThread):
                     "index": index,
                     "name": name,
                     "phase": "running" if started else "waiting",
-                    "deadline": (
-                        now + TEST_RUNTIME_SECONDS
-                        if started else None
-                    ),
                     "last_start_attempt": 0,
-                    "stop_sent_at": 0,
                     "retry_at": 0,
                     "initial_dispatched": bool(started),
                 }
@@ -236,7 +193,7 @@ class EmulatorStartWorker(QThread):
                 if started:
                     self.set_status(
                         index,
-                        "已运行，开始2分钟测试计时"
+                        "已运行，开始持续运行测试计时"
                     )
                 else:
                     self.set_status(
@@ -248,8 +205,7 @@ class EmulatorStartWorker(QThread):
             self.update_running_count(emulators)
 
             self.send_message(
-                f"测试启动：同时管理前 {len(selected)} 台模拟器；"
-                f"每台运行 {TEST_RUNTIME_SECONDS} 秒；"
+                f"循环任务启动：同时管理前 {len(selected)} 台模拟器；"
                 f"初始启动间隔 {START_INTERVAL_SECONDS} 秒。"
             )
 
@@ -339,18 +295,15 @@ class EmulatorStartWorker(QThread):
                                 # 则直接进入运行状态。
                                 if is_started:
                                     state["phase"] = "running"
-                                    state["deadline"] = (
-                                        now + TEST_RUNTIME_SECONDS
-                                    )
-
+                                    
                                     self.set_status(
                                         index,
-                                        "运行中（2分钟测试计时）"
+                                        "运行中（持续运行测试计时）"
                                     )
 
                                     self.send_message(
                                         f"{state['name']} 已确认启动，"
-                                        "开始2分钟计时。"
+                                        "开始持续运行计时。"
                                     )
 
                                 elif (
@@ -373,18 +326,15 @@ class EmulatorStartWorker(QThread):
                                 if is_started:
                                     state["phase"] = "running"
 
-                                    state["deadline"] = (
-                                        now + TEST_RUNTIME_SECONDS
-                                    )
-
+                                    
                                     self.set_status(
                                         index,
-                                        "运行中（2分钟测试计时）"
+                                        "运行中（持续运行测试计时）"
                                     )
 
                                     self.send_message(
                                         f"{state['name']} 已成功启动，"
-                                        "开始独立计时120秒。"
+                                        "开始独立计时持续运行。"
                                     )
 
                                 elif (
@@ -399,78 +349,15 @@ class EmulatorStartWorker(QThread):
 
                                 continue
 
-                            # --------------------------
-                            # 正常运行中
-                            # --------------------------
-
+                            # 正常运行中：持续运行，只监控意外退出
                             if phase == "running":
-
-                                # 运行中突然消失，判定为意外关闭。
                                 if not is_started:
-
                                     self.send_message(
-                                        f"检测到 {state['name']} 意外关闭，"
-                                        "正在自动重启原模拟器。"
+                                        f"检测到 {state['name']} 意外关闭，正在自动重启原模拟器。"
                                     )
-
-                                    self.start_one(
-                                        state,
-                                        "检测到意外关闭"
-                                    )
-
-                                    continue
-
-                                # 每台独立计时，满120秒才关闭。
-                                if (
-                                    state["deadline"] is not None
-                                    and now >= state["deadline"]
-                                ):
-                                    self.quit_one(state)
-
+                                    self.start_one(state, "检测到意外关闭")
                                 else:
-                                    remaining = max(
-                                        0,
-                                        int(
-                                            state["deadline"] - now
-                                        )
-                                    )
-
-                                    self.set_status(
-                                        index,
-                                        f"运行中（剩余{remaining}秒）"
-                                    )
-
-                                continue
-
-                            # --------------------------
-                            # 正常关闭阶段
-                            # --------------------------
-
-                            if phase == "stopping":
-
-                                # 已经确认关闭，马上重启原模拟器。
-                                if not is_started:
-
-                                    self.send_message(
-                                        f"{state['name']} 已正常关闭，"
-                                        "现在重新启动。"
-                                    )
-
-                                    self.start_one(
-                                        state,
-                                        "2分钟循环重启"
-                                    )
-
-                                # 关闭命令未生效，继续重试关闭。
-                                elif now >= state["retry_at"]:
-
-                                    self.send_message(
-                                        f"{state['name']} 尚未关闭，"
-                                        "重新发送关闭命令。"
-                                    )
-
-                                    self.quit_one(state)
-
+                                    self.set_status(index, "运行中（持续运行，不自动关闭）")
                                 continue
 
                     except Exception as exc:
@@ -800,8 +687,8 @@ class LoopMainWindow(MainWindow):
         )
 
         self.write_log(
-            f"开始循环测试：只选择列表前 {count} 台；"
-            "初始启动间隔30秒；每台运行120秒后关闭并重启；"
+            f"开始循环任务：只选择列表前 {count} 台；"
+            "初始启动间隔30秒；每台运行持续运行后关闭并重启；"
             "意外关闭自动重启原模拟器。"
         )
 
