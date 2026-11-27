@@ -1932,7 +1932,9 @@ class MainWindow(QMainWindow):
             try:
                 script_worker.stop()
                 if script_worker.isRunning():
-                    script_worker.wait(5000)
+                    # ADB/UIAutomator commands have their own timeouts; wait
+                    # for safe worker shutdown before destroying its QThread.
+                    script_worker.wait()
             except Exception:
                 pass
         self._script_workers.clear()
