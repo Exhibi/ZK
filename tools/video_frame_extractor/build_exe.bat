@@ -4,7 +4,7 @@ chcp 65001 >nul
 cd /d "%~dp0"
 
 echo ==========================================
-echo Video Frame Extractor V1.2 - Build
+echo Video Frame Extractor V1.3 - Build
 echo ==========================================
 echo.
 echo [1/4] Checking Python...
@@ -41,7 +41,7 @@ if errorlevel 1 (
 
 echo.
 echo [4/4] Building EXE with the same Python environment...
-python -m PyInstaller --noconfirm --clean --onefile --windowed --name "VideoFrameExtractor_V1.2" video_frame_extractor.py
+python -m PyInstaller --noconfirm --clean --onefile --windowed --name "VideoFrameExtractor_V1.3" video_frame_extractor.py
 if errorlevel 1 (
     echo.
     echo ERROR: Build failed. Read the messages above.
@@ -49,7 +49,7 @@ if errorlevel 1 (
     exit /b 1
 )
 
-if not exist "dist\VideoFrameExtractor_V1.2.exe" (
+if not exist "dist\VideoFrameExtractor_V1.3.exe" (
     echo ERROR: Build command ended but EXE was not found.
     pause
     exit /b 1
@@ -58,7 +58,7 @@ if not exist "dist\VideoFrameExtractor_V1.2.exe" (
 echo.
 echo ==========================================
 echo BUILD SUCCESS
-echo Output: %~dp0dist\VideoFrameExtractor_V1.2.exe
+echo Output: %~dp0dist\VideoFrameExtractor_V1.3.exe
 echo Diagnostic log after running:
 echo %%LOCALAPPDATA%%\VideoFrameExtractor\diagnostic.log
 echo ==========================================
