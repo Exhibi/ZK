@@ -260,10 +260,11 @@ class EmulatorStartWorker(QThread):
 
                     state["initial_dispatched"] = True
 
-                    self.start_one(
-                        state,
-                        "首次启动"
-                    )
+                    if state["phase"] not in ("paused", "stopped"):
+                        self.start_one(
+                            state,
+                            "首次启动"
+                        )
 
                     queue_position += 1
 
