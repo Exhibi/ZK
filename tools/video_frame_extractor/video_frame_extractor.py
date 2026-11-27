@@ -1,11 +1,13 @@
 # -*- coding: utf-8 -*-
 """
-视频关键帧提取工具 V1.1
+视频关键帧提取工具 V1.2
 独立 Windows 桌面程序：本地选视频、固定间隔提帧、画面变化补帧、生成联系表和时间戳清单。
 """
 from __future__ import annotations
 
 import csv
+from datetime import datetime
+import traceback
 import re
 import shutil
 import subprocess
@@ -23,7 +25,7 @@ except ImportError:
     np = None
 
 
-APP_TITLE = "视频关键帧提取工具 V1.1"
+APP_TITLE = "视频关键帧提取工具 V1.2"
 SUPPORTED_VIDEO = (".mp4", ".mov", ".avi", ".mkv", ".wmv", ".flv", ".m4v", ".webm")
 
 
@@ -59,8 +61,13 @@ class VideoFrameExtractorApp:
         self.worker: threading.Thread | None = None
         self.stop_event = threading.Event()
         self.is_running = False
+        self.diagnostic_dir = Path.home() / "AppData" / "Local" / "VideoFrameExtractor"
+        self.diagnostic_log = self.diagnostic_dir / "diagnostic.log"
+        self._write_diagnostic("=" * 60)
+        self._write_diagnostic("应用启动；版本 V1.2")
 
         self._build_ui()
+        self.root.report_callback_exception = self._report_callback_exception
         self.root.after(100, self._poll_events)
 
     def _build_ui(self):
@@ -79,7 +86,7 @@ class VideoFrameExtractorApp:
         outer = ttk.Frame(self.root, padding=9)
         outer.pack(fill="both", expand=True)
 
-        ttk.Label(outer, text="视频关键帧提取工具 V1.1",
+        ttk.Label(outer, text="视频关键帧提取工具 V1.2",
                   font=("Microsoft YaHei UI", 15, "bold")).pack(anchor="w")
         ttk.Label(outer, text="固定间隔截图 + 画面变化补帧，帮助还原录屏操作流程。",
                   foreground="#586174").pack(anchor="w", pady=(2, 6))
@@ -155,11 +162,25 @@ class VideoFrameExtractorApp:
         self.log = tk.Text(progress_box, height=4, font=("Consolas", 8), wrap="word",
                            bg="#ffffff", relief="solid", borderwidth=1)
         self.log.pack(fill="both", expand=True, pady=(7, 0))
-        self._log("V1.1 已就绪。画面变化检测会额外补帧，但不能保证捕捉视频中极短于采样间隔的瞬时动作。")
+        self._log("V1.2 已就绪。画面变化检测会额外补帧，但不能保证捕捉视频中极短于采样间隔的瞬时动作。")
+
+    def _write_diagnostic(self, message: str):
+        try:
+            self.diagnostic_dir.mkdir(parents=True, exist_ok=True)
+            stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            with self.diagnostic_log.open("a", encoding="utf-8") as f:
+                f.write(f"[{stamp}] {message}\\n")
+        except Exception:
+            pass
 
     def _log(self, message: str):
+        self._write_diagnostic(message)
         self.log.insert("end", message + "\n")
         self.log.see("end")
+
+    def _report_callback_exception(self, exc_type, exc_value, exc_traceback):
+        detail = "".join(traceback.format_exception(exc_type, exc_value, exc_traceback))
+        self._write_diagnostic("Tkinter界面回调异常：\\n" + detail)
 
     def choose_videos(self):
         files = filedialog.askopenfilenames(
