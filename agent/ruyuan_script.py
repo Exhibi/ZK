@@ -120,7 +120,20 @@ class RuYuanScript:
         frame = cv2.imdecode(np.fromfile(str(local), dtype=np.uint8), cv2.IMREAD_COLOR)
         if frame is None:
             raise RuntimeError("截图解码失败")
+        self.last_frame = frame
         return frame
+
+    def save_diagnostic_screenshot(self, tag="unknown"):
+        """保存异常/未识别画面，便于补充模板与路线。"""
+        if cv2 is None or self.last_frame is None:
+            return ""
+        folder = self._tmp / "diagnostics"
+        folder.mkdir(parents=True, exist_ok=True)
+        stamp = time.strftime("%Y%m%d_%H%M%S")
+        path = folder / f"ruyuan_{self.index}_{tag}_{stamp}.png"
+        if not cv2.imwrite(str(path), self.last_frame):
+            return ""
+        return str(path)
 
     def tap(self, x: int, y: int):
         """点击位置加入小幅随机偏移，并限制在画面边界内。"""
@@ -262,6 +275,13 @@ class RuYuanScript:
                         self._log("当前画面未识别到可安全执行的动作，继续观察")
                     if idle >= int(self.config.get("unknown_screen_limit", 45)):
                         self._log("长时间未识别到已配置界面，脚本安全暂停")
+                        try:
+                            self.screenshot()
+                            saved = self.save_diagnostic_screenshot("unknown")
+                            if saved:
+                                self._log(f"未识别画面已保存：{saved}")
+                        except Exception as screenshot_error:
+                            self._log(f"保存诊断截图失败：{screenshot_error}")
                         return {"success": False, "reason": "unknown_screen"}
                 self.stop_event.wait(float(self.config.get("poll_interval", 1.2)))
             except Exception as exc:
