@@ -2,19 +2,21 @@
 import threading
 import time
 
-from PySide6.QtCore import QThread, Signal, QTimer
+from PySide6.QtCore import QThread, Signal, QTimer, Qt
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
     QSpinBox,
     QTableWidgetItem,
+    QMenu,
 )
 
 from ui.main_window import MainWindow
 from agent.emulator import (
     list_emulators,
     start_emulator,
+    quit_emulator,
 )
 
 
@@ -116,6 +118,30 @@ class EmulatorStartWorker(QThread):
                 f"{name} 启动失败，将自动重试：{exc}"
             )
 
+    def pause_emulator(self, index):
+        state = self.states.get(int(index))
+        if not state or state["phase"] == "stopped":
+            return
+        if state["phase"] != "paused":
+            state["phase_before_pause"] = state["phase"]
+            state["phase"] = "paused"
+            self.set_status(int(index), "任务已暂停（模拟器保持运行）")
+            self.send_message(f"{state['name']}：任务已暂停，模拟器保持运行。")
+
+    def resume_emulator(self, index):
+        state = self.states.get(int(index))
+        if state and state["phase"] == "paused":
+            state["phase"] = state.get("phase_before_pause", "running")
+            self.set_status(int(index), "已恢复，继续监控")
+            self.send_message(f"{state['name']}：已恢复任务管理。")
+
+    def mark_emulator_stopped(self, index):
+        state = self.states.get(int(index))
+        if state:
+            state["phase"] = "stopped"
+            self.set_status(int(index), "已手动停止")
+            self.send_message(f"{state['name']}：已手动停止，不会自动重启。")
+
     def update_running_count(self, emulators):
         count = sum(
             1
@@ -186,6 +212,7 @@ class EmulatorStartWorker(QThread):
                     "last_start_attempt": 0,
                     "retry_at": 0,
                     "initial_dispatched": bool(started),
+                    "phase_before_pause": "running" if started else "waiting",
                 }
 
                 self.states[index] = state
@@ -284,6 +311,9 @@ class EmulatorStartWorker(QThread):
 
                             phase = state["phase"]
                             now = time.monotonic()
+
+                            if phase in ("paused", "stopped"):
+                                continue
 
                             # --------------------------
                             # 正在等待启动
@@ -528,6 +558,15 @@ class LoopMainWindow(MainWindow):
             return
 
         table = self.emulator_table
+        table.setMinimumHeight(390)
+        table.setAlternatingRowColors(True)
+        table.verticalHeader().setDefaultSectionSize(34)
+        table.setContextMenuPolicy(Qt.CustomContextMenu)
+        try:
+            table.customContextMenuRequested.disconnect()
+        except TypeError:
+            pass
+        table.customContextMenuRequested.connect(self.show_emulator_context_menu)
 
         table.setRowCount(0)
         self._emulator_row_map.clear()
@@ -561,6 +600,73 @@ class LoopMainWindow(MainWindow):
                 )
 
             self._emulator_row_map[index] = row
+
+    def show_emulator_context_menu(self, position):
+        table = self.emulator_table
+        row = table.rowAt(position.y())
+        if row < 0:
+            return
+        cell = table.item(row, 0)
+        if cell is None:
+            return
+        try:
+            index = int(cell.text())
+        except ValueError:
+            return
+
+        worker = self._start_worker
+        state = worker.states.get(index) if worker and worker.isRunning() else None
+        paused = bool(state and state.get("phase") == "paused")
+        stopped = bool(state and state.get("phase") == "stopped")
+
+        menu = QMenu(self)
+        pause_action = menu.addAction("恢复任务" if paused else "暂停任务")
+        stop_action = menu.addAction("停止模拟器")
+        if stopped:
+            pause_action.setEnabled(False)
+            stop_action.setEnabled(False)
+
+        chosen = menu.exec(table.viewport().mapToGlobal(position))
+        if chosen is pause_action:
+            self.resume_one_emulator(index) if paused else self.pause_one_emulator(index)
+        elif chosen is stop_action:
+            self.stop_one_emulator(index)
+
+    def pause_one_emulator(self, index):
+        worker = self._start_worker
+        if worker and worker.isRunning():
+            worker.pause_emulator(index)
+        script = self._script_workers.get(int(index))
+        if script and script.isRunning():
+            script.pause()
+        self.update_emulator_status(index, "任务已暂停（模拟器保持运行）")
+        self.write_log(f"模拟器 {index}：已暂停任务。")
+
+    def resume_one_emulator(self, index):
+        worker = self._start_worker
+        if worker and worker.isRunning():
+            worker.resume_emulator(index)
+        script = self._script_workers.get(int(index))
+        if script and script.isRunning():
+            script.resume()
+        self.update_emulator_status(index, "已恢复运行")
+        self.write_log(f"模拟器 {index}：已恢复任务。")
+
+    def stop_one_emulator(self, index):
+        worker = self._start_worker
+        if worker and worker.isRunning():
+            worker.mark_emulator_stopped(index)
+        script = self._script_workers.get(int(index))
+        if script and script.isRunning():
+            script.stop()
+        self.update_emulator_status(index, "正在停止模拟器……")
+        self.write_log(f"模拟器 {index}：正在停止脚本并关闭模拟器。")
+        self.run_background(
+            quit_emulator,
+            int(index),
+            on_success=lambda _result: self.update_emulator_status(index, "已停止"),
+            on_error=lambda message: self.update_emulator_status(index, "停止失败：" + str(message))
+        )
 
     def update_emulator_status(self, index, status):
         row = self._emulator_row_map.get(index)
