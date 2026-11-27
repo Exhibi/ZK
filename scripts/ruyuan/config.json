@@ -1,0 +1,18 @@
+{
+  "package": "",
+  "poll_interval": 1.2,
+  "action_cooldown": 1.0,
+  "max_retries": 3,
+  "unknown_screen_limit": 45,
+  "random_offset_px": 3,
+  "dialogue_tap_region": [0.12, 0.55, 0.90, 0.94],
+  "stop_on_unknown_option": true,
+  "option_routes": [],
+  "templates": {
+    "start_game": "templates/start_game.png",
+    "continue": "templates/continue.png",
+    "map_forward": "templates/map_forward.png",
+    "dialogue_next": "templates/dialogue_next.png",
+    "dialogue_indicator": "templates/dialogue_indicator.png"
+  }
+}
